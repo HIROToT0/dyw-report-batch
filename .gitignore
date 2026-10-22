@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+outputs/
+docs/
+*.xlsx
+*.pdf
+*.docx
+*.zip
+.dyw_*
+*credentials*
+*.pkl

@@ -63,6 +63,19 @@ def sort_samples(samples):
     return [samples[i] for _, _, i in keyed]
 
 
+def bookmark_title(path, n=5):
+    """书签标题：优先取文件名里的报告编号(去扩展名)，否则退回末 n 位。
+
+    文件名形如 DWYHY20260000010813_原始记录.pdf -> 标题 DWYHY20260000010813
+    （比只取末5位好用：既能定位，又看得出是哪份）
+    """
+    stem = os.path.splitext(os.path.basename(path))[0]
+    m = re.search(r"[A-Za-z]{2,}\d{6,}", stem)
+    if m:
+        return m.group(0)
+    return stem[-n:] if n else stem
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ledger", default=os.getenv("DYW_LEDGER", ""),
@@ -123,7 +136,7 @@ def main():
             multi.append((os.path.basename(p), n))
         w.append(p)
         if not a.no_bookmark:
-            w.add_outline_item(os.path.basename(p)[-a.title_len:], pages)
+            w.add_outline_item(bookmark_title(p, a.title_len), pages)
         pages += n
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)

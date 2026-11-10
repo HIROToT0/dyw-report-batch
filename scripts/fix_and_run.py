@@ -25,7 +25,8 @@ import openpyxl
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from dyw_client import DywClient, BASE, parse_volume, parse_temperature, format_remark_a
+from dyw_client import (DywClient, BASE, parse_volume, parse_temperature, format_remark_a,
+                        codes_from_any, validate_code)
 from report_engine import make_row, SIZE_RANGE, LOAD_RANGE
 
 XLSX = os.getenv("DYW_LEDGER", r'C:/Users/bonbo/Desktop/未发报告.xlsx')
@@ -304,12 +305,28 @@ def process(c, code, t, do_upload=True):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--only'); ap.add_argument('--limit', type=int, default=0)
+    ap.add_argument('--only', help='报告编号(逗号分隔) 或 CSV 路径(按"报告编号"列取)')
+    ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--exclude', default=''); ap.add_argument('--no-upload', action='store_true')
     a = ap.parse_args()
 
     tasks, order = load_tasks()
-    codes = [a.only] if a.only else order
+    if a.only:
+        # --only 支持两种: "编号,编号" 或 "结果.csv"(按"报告编号"列取, 不会打错)
+        codes, bad = codes_from_any(a.only)
+        if bad:
+            print("⚠ 以下编号格式不合法, 已忽略:")
+            for v, why in bad:
+                print("   %s  %s" % (v, why))
+        if not codes:
+            print("没有可用编号, 退出。")
+            return 1
+        if len(codes) == 1:
+            codes = codes
+        else:
+            print("从 %s 取到 %d 个编号" % (a.only, len(codes)))
+    else:
+        codes = order
     excl = set(x.strip() for x in a.exclude.split(',') if x.strip())
     codes = [x for x in codes if x not in excl]
     if a.limit:

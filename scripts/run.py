@@ -11,6 +11,8 @@
     python run.py fetch DWYHY... --pdf       # 解析电子报告 PDF(自动校验组号顺序)
     python run.py fetch DWYHY... --record     # 下载并解析原始记录 PDF
     python run.py checkgroups A,B,C           # 批量校验组号顺序(读原始记录 PDF)
+    python run.py checkgroups 结果.csv        # 同上, 编号从 CSV 取(推荐, 不会打错)
+    python run.py multigroups 验收表.csv       # 自动挑出多组报告并校验组号顺序
 
 设计约束(血泪教训):
   * 全量前必须先 drill。脚本会强制要求先跑过一次 drill 才允许 run。
@@ -24,7 +26,7 @@ import zipfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from dyw_client import DywClient, BASE  # noqa: E402
+from dyw_client import DywClient, BASE, codes_from_any, validate_code  # noqa: E402
 
 PY = sys.executable
 LEDGER = os.getenv("DYW_LEDGER", r"C:/Users/bonbo/Desktop/未发报告.xlsx")
@@ -45,8 +47,9 @@ def cmd_check():
 
 
 def cmd_drill(code):
-    """单份演练：走完整流程但不上传，用于确认字段没问题。"""
-    print("=== 单份演练 %s（保存+生成，不上传）===" % code)
+    """演练：走完整流程但不上传，用于确认字段没问题。
+    code 可以是单个编号, 也可以是 CSV 路径(按"报告编号"列取)。"""
+    print("=== 演练 %s（保存+生成，不上传）===" % code)
     rc = _sh([os.path.join(_HERE, "fix_and_run.py"), "--only", code, "--no-upload"])
     if rc == 0:
         print("\n演练完成。接下来请务必肉眼核对报告内容:")
@@ -168,6 +171,42 @@ def cmd_fetch(code, file_type="word", report_type="report"):
     return 0
 
 
+def cmd_multigroups(csv_path):
+    """从验收表 CSV 里自动挑出【多组报告】并校验组号顺序。
+    不用手拼编号串 —— 多组报告本来就该重点查。
+    """
+    import csv as _csv
+    if not os.path.exists(csv_path):
+        print("CSV 不存在: %s" % csv_path)
+        return 1
+    rows = None
+    for enc in ("utf-8-sig", "gbk"):
+        try:
+            with open(csv_path, encoding=enc, newline="") as f:
+                rows = list(_csv.DictReader(f))
+            break
+        except UnicodeDecodeError:
+            continue
+    if not rows:
+        print("CSV 没数据: %s" % csv_path)
+        return 1
+    codes = []
+    for r in rows:
+        code = (r.get("报告编号") or "").strip()
+        # 检测行数 > 1 = 多组; 0 行 = 未编制(跳过)
+        try:
+            n = int(r.get("检测行") or 0)
+        except ValueError:
+            n = 0
+        if code and n > 1 and code not in codes:
+            codes.append(code)
+    if not codes:
+        print("该 CSV 里没有多组报告(检测行数都 <=1)")
+        return 0
+    print("从 %s 挑出 %d 份多组报告" % (os.path.basename(csv_path), len(codes)))
+    return cmd_checkgroups(codes)
+
+
 def cmd_checkgroups(codes):
     """批量校验组号顺序（读原始记录 PDF）。任一份乱序则退出码非 0。"""
     c = DywClient()
@@ -229,13 +268,33 @@ def main():
         if not arg:
             print("需要报告编号")
             return 1
+        ok, why = validate_code(arg)
+        if not ok:
+            print("⚠ 报告编号不合法: %s" % why)
+            print("   提示: 编号是 DWYHY + 14位数字 共19位。")
+            print("   也可以从 CSV 取: python run.py fetch <结果.csv>")
+            return 1
         return cmd_fetch(arg, "pdf" if "--pdf" in sys.argv else "word",
                           "record" if "--record" in sys.argv else "report")
-    if cmd == "checkgroups":
-        codes = [x.strip() for x in (arg or "").replace("\n", ",").split(",") if x.strip()]
-        if not codes:
-            print('用法: python run.py checkgroups <编号1,编号2,...>')
+    if cmd == "multigroups":
+        if not arg:
+            print('用法: python run.py multigroups <最终验收表.csv>')
             return 1
+        return cmd_multigroups(arg)
+    if cmd == "checkgroups":
+        if not arg:
+            print('用法: python run.py checkgroups <编号1,编号2,...> 或 <结果.csv>')
+            return 1
+        codes, bad = codes_from_any(arg)
+        if bad:
+            print("⚠ 以下编号格式不合法, 已忽略:")
+            for v, why in bad:
+                print("   %s  %s" % (v, why))
+        if not codes:
+            print("没有可用编号。")
+            return 1
+        if arg.lower().endswith(".csv"):
+            print("从 %s 取到 %d 个编号" % (arg, len(codes)))
         return cmd_checkgroups(codes)
     print(__doc__)
     return 1

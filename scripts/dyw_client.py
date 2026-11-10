@@ -412,6 +412,97 @@ def format_remark_a(volume, temperature=None):
     return head
 
 
+# ---------- 报告编号: 校验与批量读取 ----------
+# 报告编号是 19 位完整串 DWYHY + 14 位数字(如 DWYHY20260000011581)。
+# 手打少一位/多一位都查不到, 而且**不报错**, 只回 "未查询到此报告!" ——
+# 极易误判成"报告不存在"。所以凡手输编号, 一律先过这个校验。
+CODE_RE = re.compile(r"^DWYHY\d{14}$")
+
+
+def validate_code(code):
+    """校验报告编号格式。返回 (ok, msg)。"""
+    c = str(code or "").strip()
+    if not c:
+        return False, "空编号"
+    if not c.startswith("DWYHY"):
+        return False, "不以 DWYHY 开头: %s" % c
+    if not CODE_RE.match(c):
+        return False, ("编号格式不对(应 DWYHY + 14位数字, 共19位): %s (实际%d位)"
+                       % (c, len(c)))
+    return True, ""
+
+
+def codes_from_csv(path, col="报告编号"):
+    """从 CSV 取报告编号(按列名), 去重保序。
+
+    列名兼容: 报告编号 / 编号 / reportCode。
+    编码兼容 UTF-8(含BOM) 与 GBK。
+    返回 (codes, bad) —— bad 是 [(原值, 原因)] 列表。
+    """
+    import csv as _csv
+    if not os.path.exists(path):
+        raise RuntimeError("CSV 不存在: %s" % path)
+    rows = None
+    for enc in ("utf-8-sig", "gbk"):
+        try:
+            with open(path, encoding=enc, newline="") as f:
+                rows = list(_csv.DictReader(f))
+            break
+        except UnicodeDecodeError:
+            continue
+    if not rows:
+        raise RuntimeError("CSV 没有数据行: %s" % path)
+    key = None
+    for cand in (col, "报告编号", "编号", "reportCode"):
+        if cand in rows[0]:
+            key = cand
+            break
+    if key is None:
+        raise RuntimeError("CSV 里找不到报告编号列, 现有列: %s" % list(rows[0].keys()))
+    out, seen, bad = [], set(), []
+    for r in rows:
+        v = r.get(key)
+        if v is None:
+            continue
+        c = str(v).strip()
+        if not c:
+            continue
+        ok, msg = validate_code(c)
+        if not ok:
+            bad.append((c, msg))
+            continue
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out, bad
+
+
+def codes_from_any(spec):
+    """统一入口: 编号来源可以是
+      - "A,B,C"   逗号分隔(手输)
+      - "a.csv"   CSV 文件路径(按"报告编号"列取) <- 推荐, 不会打错
+    返回 (codes, bad)。
+    """
+    spec = str(spec or "").strip()
+    if not spec:
+        return [], []
+    if spec.lower().endswith(".csv"):
+        return codes_from_csv(spec)
+    codes, bad, seen = [], [], set()
+    for part in spec.replace("\n", ",").split(","):
+        c = part.strip()
+        if not c:
+            continue
+        ok, msg = validate_code(c)
+        if not ok:
+            bad.append((c, msg))
+            continue
+        if c not in seen:
+            seen.add(c)
+            codes.append(c)
+    return codes, bad
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true", help="强制重新登录")

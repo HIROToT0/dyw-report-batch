@@ -18,7 +18,7 @@
 import argparse, csv, os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dyw_client import DywClient, BASE
+from dyw_client import DywClient, BASE, codes_from_any
 
 TEMPLATE_ID = "551"          # 模板 ID，绝不能换成记录级 reportId
 KIND = {"record": "原始记录", "report": "电子报告"}
@@ -64,7 +64,8 @@ def download(c, code, kind, ftype, dest):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--codes", default="", help="逗号分隔的报告编号；不给则读台账")
+    ap.add_argument("--codes", default="",
+                    help="逗号分隔的报告编号, 或 CSV 路径(按\"报告编号\"列取)；不给则读台账")
     ap.add_argument("--ledger", default=os.getenv("DYW_LEDGER", ""), help="台账 xlsx 路径")
     ap.add_argument("--kind", default="record", choices=["record", "report"], help="record=原始记录(默认)")
     ap.add_argument("--type", default="pdf", choices=["pdf", "word"])
@@ -73,7 +74,14 @@ def main():
     a = ap.parse_args()
 
     if a.codes:
-        codes = [x.strip() for x in a.codes.replace("\n", ",").split(",") if x.strip()]
+        codes, bad = codes_from_any(a.codes)
+        if bad:
+            print("⚠ 以下编号格式不合法, 已忽略:")
+            for v, why in bad:
+                print("   %s  %s" % (v, why))
+        if not codes:
+            print("没有可用编号, 退出。")
+            return 1
     elif a.ledger and os.path.exists(a.ledger):
         codes = codes_from_ledger(a.ledger)
     else:

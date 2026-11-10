@@ -63,6 +63,23 @@ def sort_samples(samples):
     return [samples[i] for _, _, i in keyed]
 
 
+def _code_of(path, tpl):
+    """从文件路径反推报告编号。
+
+    文件名形如 DWYHY20260000010292_原始记录.pdf —— 要的是纯编号部分,
+    不能用模板前缀切(前缀是空串会把 "_原始记录" 后缀也带上)。
+    """
+    stem = os.path.splitext(os.path.basename(path))[0]
+    m = re.search(r"[A-Za-z]{2,}\d{6,}", stem)
+    if m:
+        return m.group(0)
+    # 退化: 按模板后缀切
+    suffix = tpl.split("%s", 1)[1] if "%s" in tpl else ""
+    if suffix and stem.endswith(os.path.splitext(suffix)[0]):
+        return stem[: -len(os.path.splitext(suffix)[0])]
+    return stem
+
+
 def bookmark_title(path, n=5):
     """书签标题：优先取文件名里的报告编号(去扩展名)，否则退回末 n 位。
 
@@ -89,6 +106,10 @@ def main():
     ap.add_argument("--glob", default="", help="不用编号，直接匹配目录下 pdf")
     ap.add_argument("--title-len", type=int, default=5, help="书签标题取文件名末几位")
     ap.add_argument("--no-bookmark", action="store_true")
+    ap.add_argument("--exclude", default="",
+                    help="要排除的编号(逗号分隔 或 CSV 路径), 用于剔除内容有问题的报告")
+    ap.add_argument("--only", default="",
+                    help="只合并这些编号(逗号分隔 或 CSV 路径), 优先级高于 --exclude")
     a = ap.parse_args()
 
     try:
@@ -98,6 +119,16 @@ def main():
         return 1
 
     tpl = a.pattern or ("%s_原始记录.pdf" if a.kind == "record" else "%s_电子报告.pdf")
+
+    # --exclude / --only 也支持 CSV 路径
+    from dyw_client import codes_from_any
+    excl = set()
+    if a.exclude:
+        excl = set(codes_from_any(a.exclude)[0])
+    only = set()
+    if a.only:
+        only = set(codes_from_any(a.only)[0])
+        print("只合并指定编号: %d 个" % len(only))
 
     files = []
     if a.glob:
@@ -120,6 +151,20 @@ def main():
             for c in sort_samples(group):
                 p = os.path.join(a.folder, tpl % c)
                 files.append(p)
+
+    if excl or only:
+        before = len(files)
+
+        def _keep(p):
+            code = _code_of(p, tpl)
+            if only and code not in only:
+                return False
+            if excl and code in excl:
+                return False
+            return True
+
+        files = [p for p in files if _keep(p)]
+        print("筛选: %d -> %d 份 (排除 %d 个编号)" % (before, len(files), len(excl)))
 
     missing = [p for p in files if not os.path.exists(p)]
     files = [p for p in files if os.path.exists(p)]

@@ -64,7 +64,7 @@ def main():
 
     c = DywClient(); c.login()
     tasks = load()
-    ok, need, done = [], [], []
+    ok, need, done, notready = [], [], [], []
 
     for i, (code, t) in enumerate(sorted(tasks.items()), 1):
         j = c.post('/ptcompile/getReportInfo.do',
@@ -74,6 +74,7 @@ def main():
             continue
         d = j['data']
         ss = d.get('savedSingleField') or {}
+        oi = d.get('orderInfo') or {}
         gui, grade = ss.get('gui_ge'), ss.get('chanpin_guige')
         vol = parse_volume(ss.get('qi_ta'))
         yh = (ss.get('yang_hu_tiao_jian') or '').strip()
@@ -84,6 +85,14 @@ def main():
         if flag == "1":
             who = "脚本上传" if is_script_remark(remark) else "人工上传"
             done.append((code, "已上传", remark or "(空)", who))
+            continue
+
+        # ---- 状态未就绪：报告记录还没生成，编不了 ----
+        # IN = 业务系统已推委托单但报告记录未初始化（2026-11-10 实测 12 份）
+        #     此时加不进检测数据，保存报"当前报告状态不能编制！"
+        stt = (oi.get('reportStatus') or '').strip()
+        if stt and stt != 'TEST':
+            notready.append((code, "状态=%s 未就绪" % stt, "", ""))
             continue
 
         probs = []
@@ -110,11 +119,16 @@ def main():
 
     print()
     print("=" * 62)
-    print("可自动跑: %d 份 | 缺数据待补: %d 份 | 已有成果跳过: %d 份 | 合计 %d"
-          % (len(ok), len(need), len(done), len(tasks)))
+    print("可自动跑: %d 份 | 缺数据待补: %d 份 | 已有成果跳过: %d 份 | 状态未就绪: %d 份 | 合计 %d"
+          % (len(ok), len(need), len(done), len(notready), len(tasks)))
     print("养护分布:", dict(Counter(r[5] for r in ok)))
     print("规格分布:", dict(Counter(r[2] for r in ok)))
     print("等级分布:", dict(Counter(r[3] for r in ok)))
+
+    if notready:
+        print("\n--- 状态未就绪(%d 份, 报告记录还没生成, 编不了) ---" % len(notready))
+        for code, why, _, _ in notready:
+            print("  %s  %s  (等业务系统推进到 TEST 后再跑)" % (code[-5:], why))
 
     if done:
         manual = [x for x in done if x[3] == "人工上传"]
@@ -146,10 +160,14 @@ def main():
             rows.append({"报告编号": code, "分类": "缺数据待补", "组数": "", "规格": "",
                          "等级": "", "方量": "", "养护": "", "累计温度": "", "台账温度": "",
                          "台账湿度": "", "备注A预览": remark, "问题": why})
-        for code, _, remark, who in done:
+        for code, why, remark, who in done:
             rows.append({"报告编号": code, "分类": "已有成果跳过", "组数": "", "规格": "",
                          "等级": "", "方量": "", "养护": "", "累计温度": "", "台账温度": "",
                          "台账湿度": "", "备注A预览": remark, "问题": who})
+        for code, why, remark, who in notready:
+            rows.append({"报告编号": code, "分类": "状态未就绪", "组数": "", "规格": "",
+                         "等级": "", "方量": "", "养护": "", "累计温度": "", "台账温度": "",
+                         "台账湿度": "", "备注A预览": "", "问题": why})
         with open(OUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             w.writeheader()

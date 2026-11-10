@@ -141,7 +141,8 @@ def fmt_hum(v):
 
 def process(c, code, t, do_upload=True):
     res = {"报告编号": code, "组数": len(t["samples"]), "备注A": "", "温度": "", "湿度": "",
-           "补齐字段": "", "添加": "", "保存": "", "生成": "", "上传": "", "状态": "", "说明": ""}
+           "补齐字段": "", "添加": "", "保存": "", "生成": "", "上传": "", "状态": "",
+           "检测行": "", "说明": ""}
 
     j = c.post('/ptcompile/getReportInfo.do', data={'reportCode': code, 'reportId': RID}).json()
     if not j.get('isSuccess'):
@@ -149,6 +150,28 @@ def process(c, code, t, do_upload=True):
         return False, res
     d = j['data']
     ss, oi = d['savedSingleField'], d['orderInfo']
+
+    # ---- 0. 已上传过的直接跳过, 绝不覆盖(可能是人工做的) ----
+    if d.get('downloadFlag') == "1":
+        res["状态"] = "已上传跳过"
+        res["上传"] = "跳过"
+        res["说明"] = "已上传过(downloadFlag=1), 未改动"
+        res["备注A"] = ss.get('bei_zhu_A') or ""
+        res["温度"], res["湿度"] = ss.get('wen_du'), ss.get('shi_du')
+        res["检测行"] = len(d.get('savedBatchFieldList') or [])
+        return True, res
+
+    # ---- 0b. 状态不是 TEST = 报告记录还没就绪, 编不了 ----
+    # IN = 业务系统已推委托单但报告记录未初始化(2026-11-10 实测 12 份)
+    #     此时 addReportMultiData 加不进数据, saveAllData 报"当前报告状态不能编制！"
+    #     不是数据问题, 等业务系统把状态推进到 TEST 再编。
+    st = oi.get('reportStatus')
+    if st and st != 'TEST':
+        res["状态"] = "状态未就绪(%s)" % st
+        res["上传"] = "跳过"
+        res["说明"] = "报告状态=%s 非TEST(未就绪), 跳过" % st
+        return True, res
+
     gui_ge, grade = ss.get('gui_ge'), ss.get('chanpin_guige')
     if gui_ge not in SIZE_RANGE or grade not in LOAD_RANGE:
         res["说明"] = "规格/等级不支持: %s/%s" % (gui_ge, grade)
@@ -229,6 +252,7 @@ def process(c, code, t, do_upload=True):
     res["保存"] = "✓" if rj.get('isSuccess') else "✗"
     if not rj.get('isSuccess'):
         res["说明"] += " 保存失败:" + str(rj.get('responseMsg'))[:60]
+        res["上传"] = "✗"
         return False, res
 
     # ---- 6. 生成 ----
@@ -241,6 +265,7 @@ def process(c, code, t, do_upload=True):
     res["生成"] = "✓" if rj.get('isSuccess') else "✗"
     if not rj.get('isSuccess'):
         res["说明"] += " 生成失败:" + str(rj.get('responseMsg'))[:60]
+        res["上传"] = "✗"
         return False, res
 
     # 等报告文件产出（downloadFlag=1 且 previewPdfUrl 有值）
@@ -306,7 +331,8 @@ def main():
         except Exception as e:
             ok, res = False, {"报告编号": code, "组数": len(tasks[code]["samples"]), "备注A": "",
                               "温度": "", "湿度": "", "补齐字段": "", "添加": "", "保存": "✗",
-                              "生成": "✗", "上传": "✗", "状态": "", "说明": "异常:" + repr(e)[:120]}
+                              "生成": "✗", "上传": "✗", "状态": "", "检测行": "",
+                              "说明": "异常:" + repr(e)[:120]}
         results.append(res)
         print("[%2d/%d] %s 组%s 补%s 加%s 存%s 生%s 传%s %s" % (
             i, len(codes), code[-5:], res["组数"], res["补齐字段"] or "-", res["添加"],
@@ -330,8 +356,16 @@ def main():
             ws.cell(1, c_prog).value = "进度"
         print("回写进度列: 第%d列" % c_prog)
         for res in results:
-            mark = "已完成" if res["上传"] == "✓" else (
-                "已生成(未上传)" if res["上传"] == "跳过" else "失败:" + res["说明"][:40])
+            if res["上传"] == "✓":
+                mark = "已完成"
+            elif res["状态"] == "已上传跳过":
+                mark = "已完成"          # 本来就上传过, 也是已完成
+            elif "未就绪" in (res["状态"] or ""):
+                mark = "待就绪(状态未推进)"   # 等业务系统把状态推到 TEST 再编
+            elif res["上传"] == "跳过":
+                mark = "已生成(未上传)"
+            else:
+                mark = "失败:" + res["说明"][:40]
             for r in tasks[res["报告编号"]]["rows"]:
                 ws.cell(r, c_prog).value = mark
         try:
@@ -347,9 +381,12 @@ def main():
 
     print("\n" + "=" * 62)
     print("耗时 %.1fs | %d 份" % (time.time() - t0, len(results)))
-    print("  上传成功: %d   未上传: %d   失败: %d" % (
+    print("  上传成功: %d   已上传跳过: %d   未就绪跳过: %d   未上传: %d   失败: %d" % (
         sum(1 for r in results if r["上传"] == "✓"),
-        sum(1 for r in results if r["上传"] == "跳过"),
+        sum(1 for r in results if r["状态"] == "已上传跳过"),
+        sum(1 for r in results if "未就绪" in (r["状态"] or "")),
+        sum(1 for r in results if r["上传"] == "跳过"
+            and r["状态"] != "已上传跳过" and "未就绪" not in (r["状态"] or "")),
         sum(1 for r in results if r["上传"] == "✗")))
     print("结果: %s" % OUT)
     for r in results:

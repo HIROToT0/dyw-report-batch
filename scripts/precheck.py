@@ -104,6 +104,13 @@ def main():
             temp = parse_temperature(ss.get('lei_ji_yang_hu_wen_du'))
             if temp is None:
                 probs.append("累计温度解析失败:%r" % (ss.get('lei_ji_yang_hu_wen_du')))
+        # 委托单缺"试验日期"/"成型日期" -> 报告表格该行会缺失, 后面列全部错位。
+        # shi_yan_ri_qi 是只读字段(来自委托单 mustAttribute), saveAllData 写不进去,
+        # 所以只能人工去业务系统把委托单补上。
+        if not (ss.get('shi_yan_ri_qi') or '').strip():
+            probs.append("委托单缺试验日期(只读字段,需业务系统补)")
+        if not (ss.get('cheng_xing_ri_qi') or '').strip():
+            probs.append("委托单缺成型日期(龄期算不出)")
         if not t['samples']: probs.append("台账无样品编号")
         if t['temp'] is None: probs.append("台账无温度")
         if t['hum'] is None: probs.append("台账无湿度")

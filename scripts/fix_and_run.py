@@ -81,7 +81,8 @@ def load_tasks():
     ws = openpyxl.load_workbook(XLSX, data_only=True)['任务列表']
     c_temp = col_of(ws, "温度", default=6)
     c_hum = col_of(ws, "湿度", default=7)
-    print("台账列定位: 温度=第%d列 湿度=第%d列" % (c_temp, c_hum))
+    c_req = col_of(ws, "要求试验日期", "试验日期", default=6)
+    print("台账列定位: 温度=第%d列 湿度=第%d列 要求试验日期=第%d列" % (c_temp, c_hum, c_req))
     g, order = {}, []
     reordered = []
     for r in range(2, ws.max_row + 1):
@@ -89,13 +90,18 @@ def load_tasks():
         if not code:
             continue
         code = str(code).strip()
-        t = g.setdefault(code, {"samples": [], "temp": None, "hum": None, "rows": []})
+        t = g.setdefault(code, {"samples": [], "temp": None, "hum": None,
+                                "req_date": None, "rows": []})
         if code not in order:
             order.append(code)
         s = ws.cell(r, 2).value
         if s:
             t["samples"].append(str(s).strip())
         t["temp"], t["hum"] = ws.cell(r, c_temp).value, ws.cell(r, c_hum).value
+        # 要求试验日期: 系统里 shi_yan_ri_qi 为空时用它回填(实测两者一致)
+        rv = ws.cell(r, c_req).value
+        if rv is not None:
+            t["req_date"] = str(rv)[:10]
         t["rows"].append(r)
     # 组号按数值排序（10 组及以上必排，见 sort_samples 说明）
     for code, t in g.items():
@@ -140,7 +146,7 @@ def fmt_hum(v):
         return None
 
 
-def process(c, code, t, do_upload=True):
+def process(c, code, t, do_upload=True, force=False):
     res = {"报告编号": code, "组数": len(t["samples"]), "备注A": "", "温度": "", "湿度": "",
            "补齐字段": "", "添加": "", "保存": "", "生成": "", "上传": "", "状态": "",
            "检测行": "", "说明": ""}
@@ -153,7 +159,7 @@ def process(c, code, t, do_upload=True):
     ss, oi = d['savedSingleField'], d['orderInfo']
 
     # ---- 0. 已上传过的直接跳过, 绝不覆盖(可能是人工做的) ----
-    if d.get('downloadFlag') == "1":
+    if d.get('downloadFlag') == "1" and not force:
         res["状态"] = "已上传跳过"
         res["上传"] = "跳过"
         res["说明"] = "已上传过(downloadFlag=1), 未改动"
@@ -197,6 +203,16 @@ def process(c, code, t, do_upload=True):
     if added != len(samples):
         res["说明"] += " 添加数据不完整;"
 
+    # ---- 2b. 试验日期为空 -> 用台账"要求试验日期"回填 ----
+    # 委托时漏填"试验日期"会让龄期/报告日期都算不出来(报告上两栏空白)。
+    # 实测系统里的试验日期 == 台账要求试验日期(抽查40份全一致), 可安全回填。
+    filled_dates = None
+    if not (ss.get("shi_yan_ri_qi") or "").strip():
+        rd = t.get("req_date")
+        if rd:
+            ss["shi_yan_ri_qi"] = rd
+            filled_dates = rd
+
     # ---- 3. 补齐报告渲染字段 ----
     filled = []
     for dst, src in FIELD_MAP.items():
@@ -230,6 +246,13 @@ def process(c, code, t, do_upload=True):
     else:
         res["说明"] += " 方量缺失(备注A未填);"
     res["备注A"] = ss.get('bei_zhu_A') or ''
+    if filled_dates:
+        res["说明"] += " 试验日期已按台账回填:%s;" % filled_dates
+        # 只读字段写入会被静默忽略(saveAllData 返回成功但读回还是空),
+        # 所以必须读回验证, 否则报告表格会缺"试验日期"行导致列错位。
+        rb = c.get_full_report(code).get('savedSingleField') or {}
+        if not (rb.get('shi_yan_ri_qi') or '').strip():
+            res["说明"] += " ⚠试验日期是只读字段,写入未生效(需业务系统补委托单),表格会缺该行;"
     ss['bao_gao_ri_qi'] = ss.get('shi_yan_ri_qi') or ss.get('bao_gao_ri_qi')
     tv, hv = fmt_temp(t["temp"]), fmt_hum(t["hum"])
     if tv:
@@ -308,6 +331,8 @@ def main():
     ap.add_argument('--only', help='报告编号(逗号分隔) 或 CSV 路径(按"报告编号"列取)')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--exclude', default=''); ap.add_argument('--no-upload', action='store_true')
+    ap.add_argument('--force', action='store_true',
+                    help='强制重编(忽略 downloadFlag=1 的跳过), 用于修正已上传但字段有缺的报告')
     a = ap.parse_args()
 
     tasks, order = load_tasks()
@@ -344,7 +369,7 @@ def main():
     results, t0 = [], time.time()
     for i, code in enumerate(codes, 1):
         try:
-            ok, res = process(c, code, tasks[code], do_upload=not a.no_upload)
+            ok, res = process(c, code, tasks[code], do_upload=not a.no_upload, force=a.force)
         except Exception as e:
             ok, res = False, {"报告编号": code, "组数": len(tasks[code]["samples"]), "备注A": "",
                               "温度": "", "湿度": "", "补齐字段": "", "添加": "", "保存": "✗",

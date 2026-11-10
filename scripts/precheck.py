@@ -168,6 +168,21 @@ def main():
             rows.append({"报告编号": code, "分类": "状态未就绪", "组数": "", "规格": "",
                          "等级": "", "方量": "", "养护": "", "累计温度": "", "台账温度": "",
                          "台账湿度": "", "备注A预览": "", "问题": why})
+        # 状态未就绪的单独导一份, 方便直接转给业务/系统同事跟进
+        if notready:
+            pend = os.path.join(os.getcwd(), "docs", "待跟进_未就绪.csv")
+            os.makedirs(os.path.dirname(pend), exist_ok=True)
+            prows = []
+            for code, why, _, _ in notready:
+                j2 = c.post('/ptcompile/getReportInfo.do',
+                            data={'reportCode': code, 'reportId': '551'}).json()
+                oi2 = (j2.get('data') or {}).get('orderInfo') or {}
+                prows.append({"报告编号": code, "委托单号": oi2.get('orderNo') or "",
+                              "报告状态": oi2.get('reportStatus') or "", "问题": why})
+            with open(pend, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.DictWriter(f, fieldnames=list(prows[0].keys()))
+                w.writeheader(); w.writerows(prows)
+            print("待跟进清单: %s" % pend)
         with open(OUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             w.writeheader()
